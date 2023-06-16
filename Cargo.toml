@@ -1,0 +1,25 @@
+[package]
+name = "data_ingest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.3.3", features = ["derive"] }
+clickhouse-rs = { git = "https://github.com/azat-archive/clickhouse-rs", branch = "next", features = ["tls"] }
+log = "0.4.19"
+env_logger = "0.10"
+async-channel = "1.8"
+rand = "0.8.5"
+url = "2.4.0"
+
+[dependencies.tokio]
+version = "*"
+features = ["full"]
+
+[dependencies.native-tls]
+version = "0.2"
+optional = true
+
+[dependencies.tokio-native-tls]
+version = "^0.3"
+optional = true
