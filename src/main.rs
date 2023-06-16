@@ -3,7 +3,7 @@ use clap::Parser;
 use clickhouse_rs::{Block, ClientHandle, Options, Pool};
 use log::{debug, info, trace};
 use rand::prelude::*;
-use std::collections::{vec_deque::VecDeque, HashMap};
+use std::collections::vec_deque::VecDeque;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -124,10 +124,17 @@ async fn insert_worker(
         let mut client = pool.get_handle().await?;
         let element = rand::thread_rng().gen_range(0..tables.len());
         let table: &String = tables.get(element).unwrap();
-        let block: Block = Block::new().column(
-            "value",
-            (value..(value + insert_settings.chunk_size)).collect::<Vec<u64>>(),
+
+        let settings_string = format!(
+            "wait_for_async_insert = {}, async_insert_busy_timeout_ms = {}",
+            insert_settings.wait_for_insert, insert_settings.async_insert_flush_timeout_ms
         );
+
+        let values_string = (value..(value + insert_settings.chunk_size))
+            .map(|n| format!("({})", n))
+            .collect::<Vec<String>>()
+            .join(", ");
+
         trace!(
             "{}: Inserting from {} to {} into {}",
             index,
@@ -136,23 +143,12 @@ async fn insert_worker(
             table
         );
 
-        let insert_settings: HashMap<String, String> = HashMap::from([
-            (
-                "wait_for_async_insert".to_string(),
-                if insert_settings.wait_for_insert {
-                    "1".to_string()
-                } else {
-                    "0".to_string()
-                },
-            ),
-            (
-                "async_insert_busy_timeout_ms".to_string(),
-                format!("{}", insert_settings.async_insert_flush_timeout_ms),
-            ),
-        ]);
-        client
-            .insert_with_settings(table, block, insert_settings)
-            .await?;
+        let query = format!(
+            "INSERT INTO {} SETTINGS {} VALUES {}",
+            table, settings_string, values_string
+        );
+
+        client.execute(query).await?;
     }
 
     info!("worker {}: Queue closed, stopping insert worker", index);
@@ -224,10 +220,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let insert_start_barrier =
         Arc::new(Barrier::new((args.insert_workers + 1).try_into().unwrap()));
 
-    let insert_settings = InsertSettings{
+    let insert_settings = InsertSettings {
         wait_for_insert: args.wait_for_async_insert,
         async_insert_flush_timeout_ms: args.async_insert_flush_timeout_ms,
-        chunk_size: args.chunk_size
+        chunk_size: args.chunk_size,
     };
 
     info!("Adding insert workers");
