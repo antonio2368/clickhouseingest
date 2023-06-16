@@ -1,15 +1,15 @@
 use async_channel;
 use clap::Parser;
-use clickhouse_rs::{Block, Options, Pool, ClientHandle};
+use clickhouse_rs::{Block, ClientHandle, Options, Pool};
 use log::{debug, info, trace};
 use rand::prelude::*;
+use std::collections::{vec_deque::VecDeque, HashMap};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Barrier;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
-use std::collections::vec_deque::VecDeque;
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -48,7 +48,7 @@ impl Stats {
     fn print_stats(&self, current_count: u64) {
         let elapsed = self.start_time.elapsed().unwrap();
         if elapsed.as_secs() == 0 {
-            return
+            return;
         }
 
         info!(
@@ -59,22 +59,31 @@ impl Stats {
         );
     }
 }
-async fn get_total_count(tables: &Arc<Vec<String>>, client: &mut ClientHandle) -> Result<u64, Box<dyn Error>> {
+async fn get_total_count(
+    tables: &Arc<Vec<String>>,
+    client: &mut ClientHandle,
+) -> Result<u64, Box<dyn Error>> {
     debug!("Collecting row counts");
     let tables_set: Vec<String> = tables.iter().map(|table| format!("'{}'", table)).collect();
     let block = client
-        .query(format!("SELECT table, total_rows FROM system.tables WHERE database || '.' || table IN ({})", tables_set.join(", ")))
+        .query(format!(
+            "SELECT table, total_rows FROM system.tables WHERE database || '.' || table IN ({})",
+            tables_set.join(", ")
+        ))
         .fetch_all()
         .await
         .unwrap();
 
-    let total_count = block.rows().map(|row| {
-        let total_rows: Option<u64> = row.get("total_rows").unwrap();
-        let table: &str = row.get("table").unwrap();
-        debug!("{} rows in {}", total_rows.unwrap(), table);
+    let total_count = block
+        .rows()
+        .map(|row| {
+            let total_rows: Option<u64> = row.get("total_rows").unwrap();
+            let table: &str = row.get("table").unwrap();
+            debug!("{} rows in {}", total_rows.unwrap(), table);
 
-        total_rows.unwrap()
-    }).sum();
+            total_rows.unwrap()
+        })
+        .sum();
 
     Ok(total_count)
 }
@@ -113,7 +122,13 @@ async fn insert_worker(
             value + chunk_size,
             table
         );
-        client.insert(table, block).await?;
+        client
+            .insert_with_settings(
+                table,
+                block,
+                HashMap::from([("wait_for_async_insert".to_string(), "0".to_string())]),
+            )
+            .await?;
     }
 
     info!("worker {}: Queue closed, stopping insert worker", index);
@@ -211,14 +226,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut old_values: VecDeque<u64> = VecDeque::new();
     loop {
         let value = {
-            let should_duplicate = !old_values.is_empty() && rng.gen::<f64>() < args.duplication_rate;
+            let should_duplicate =
+                !old_values.is_empty() && rng.gen::<f64>() < args.duplication_rate;
             if should_duplicate {
                 let index = rng.gen_range(0..old_values.len());
                 debug!("Duplicating value");
                 *old_values.get(index).unwrap()
-            }
-            else
-            {
+            } else {
                 let value = rng.next_u64();
 
                 if old_values.len() == 100 {
